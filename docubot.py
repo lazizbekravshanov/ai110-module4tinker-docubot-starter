@@ -9,6 +9,17 @@ Core DocuBot class responsible for:
 
 import os
 import glob
+import re
+
+
+def _tokenize(text):
+    """
+    Lowercase the text and split it into alphanumeric word tokens.
+    Punctuation is dropped, so "/api/users" becomes ["api", "users"]
+    and a query for "users" will still match it.
+    """
+    return re.findall(r"\w+", text.lower())
+
 
 class DocuBot:
     def __init__(self, docs_folder="docs", llm_client=None):
@@ -50,21 +61,21 @@ class DocuBot:
 
     def build_index(self, documents):
         """
-        TODO (Phase 1):
-        Build a tiny inverted index mapping lowercase words to the documents
-        they appear in.
+        Build a tiny inverted index mapping lowercase tokens to the
+        filenames they appear in.
 
         Example structure:
         {
             "token": ["AUTH.md", "API_REFERENCE.md"],
             "database": ["DATABASE.md"]
         }
-
-        Keep this simple: split on whitespace, lowercase tokens,
-        ignore punctuation if needed.
         """
         index = {}
-        # TODO: implement simple indexing
+        for filename, text in documents:
+            # Use a set so each filename is recorded once per token,
+            # even if the token appears many times in the document.
+            for token in set(_tokenize(text)):
+                index.setdefault(token, []).append(filename)
         return index
 
     # -----------------------------------------------------------
@@ -73,27 +84,56 @@ class DocuBot:
 
     def score_document(self, query, text):
         """
-        TODO (Phase 1):
         Return a simple relevance score for how well the text matches the query.
 
-        Suggested baseline:
-        - Convert query into lowercase words
-        - Count how many appear in the text
-        - Return the count as the score
+        Each occurrence of a query token in the text adds 1 to the score, so
+        documents that mention the query terms more often rank higher.
         """
-        # TODO: implement scoring
-        return 0
+        query_tokens = _tokenize(query)
+        if not query_tokens:
+            return 0
+
+        # Count token frequencies in the document once, then look up
+        # each query token. This is O(len(text) + len(query)).
+        text_counts = {}
+        for token in _tokenize(text):
+            text_counts[token] = text_counts.get(token, 0) + 1
+
+        return sum(text_counts.get(qt, 0) for qt in query_tokens)
 
     def retrieve(self, query, top_k=3):
         """
-        TODO (Phase 1):
-        Use the index and scoring function to select top_k relevant document snippets.
+        Use the index and scoring function to select top_k relevant document
+        snippets.
 
         Return a list of (filename, text) sorted by score descending.
         """
-        results = []
-        # TODO: implement retrieval logic
-        return results[:top_k]
+        query_tokens = _tokenize(query)
+        if not query_tokens:
+            return []
+
+        # Step 1: use the inverted index to find candidate documents
+        # that contain at least one query token. This skips docs that
+        # cannot possibly match.
+        candidates = set()
+        for token in query_tokens:
+            for filename in self.index.get(token, []):
+                candidates.add(filename)
+
+        if not candidates:
+            return []
+
+        # Step 2: score each candidate by counting query-term occurrences.
+        doc_lookup = {filename: text for filename, text in self.documents}
+        scored = []
+        for filename in candidates:
+            text = doc_lookup[filename]
+            score = self.score_document(query, text)
+            scored.append((score, filename, text))
+
+        # Step 3: sort highest score first and return top_k.
+        scored.sort(key=lambda item: item[0], reverse=True)
+        return [(filename, text) for _, filename, text in scored[:top_k]]
 
     # -----------------------------------------------------------
     # Answering Modes
